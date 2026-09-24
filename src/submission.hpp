@@ -61,7 +61,20 @@ public:
   std::size_t rows() const { return rows_; }
   std::size_t cols() const { return cols_; }
   std::size_t stride() const { return stride_; }
+
+  // Pointer to the start of row i
+  double*       row(std::size_t i)       { return data_.data() + i * stride_; }
+  const double* row(std::size_t i) const { return data_.data() + i * stride_; }
 };
+
+// Computes one interior row. __restrict tells the compiler that out does not
+// overlap up, mid or down, so it can vectorize without runtime overlap checks.
+inline void stencil_row(const double* __restrict up, const double* __restrict mid,
+                        const double* __restrict down, double* __restrict out, std::size_t cols) {
+  for (std::size_t j = 1; j + 1 < cols; ++j) {
+    out[j] = 0.5 * mid[j] + 0.125 * (up[j] + down[j] + mid[j - 1] + mid[j + 1]);
+  }
+}
 
 // Apply the five-point stencil over all interior points, copying the boundary
 // values unchanged from old_grid to new_grid. Implement your solution here.
@@ -88,8 +101,6 @@ inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
 
   // Interior cells
   for (std::size_t i = 1; i + 1 < rows; ++i) {
-    for (std::size_t j = 1; j + 1 < cols; ++j) {
-      new_grid(i, j) = 0.5 * old_grid(i, j) + 0.125 * (old_grid(i - 1, j) + old_grid(i + 1, j) + old_grid(i, j - 1) + old_grid(i, j + 1));
-    }
+    stencil_row(old_grid.row(i - 1), old_grid.row(i), old_grid.row(i + 1), new_grid.row(i), cols);
   }
 }
