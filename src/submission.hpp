@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <new>
 #include <vector>
 
 // Starter Grid for the 2D heat-diffusion problem.
@@ -9,23 +10,56 @@
 // results; it never touches your internal storage. Keep this interface,
 // everything else is yours.
 
+// Every row starts on a 64-byte boundary
+inline constexpr std::size_t CacheLineBytes = 64;
+inline constexpr std::size_t DoublesPerCacheLine = CacheLineBytes / sizeof(double);  // 8
 
-// One vector, element (i, j) at i * cols + j
+// std::vector only guarantees alignof(double) == 8 bytes. 
+// This allocator makes sure that every row of the grid starts on a cache line boundary
+template <typename T>
+struct AlignedAllocator {
+  using value_type = T;
+
+  AlignedAllocator() = default;
+  template <typename U>
+  AlignedAllocator(const AlignedAllocator<U>&) {}
+
+  T* allocate(std::size_t n) {
+    return static_cast<T*>(::operator new(n * sizeof(T), std::align_val_t{CacheLineBytes}));
+  }
+  void deallocate(T* p, std::size_t) {
+    ::operator delete(p, std::align_val_t{CacheLineBytes});
+  }
+
+  template <typename U>
+  bool operator==(const AlignedAllocator<U>&) const { return true; }
+  template <typename U>
+  bool operator!=(const AlignedAllocator<U>&) const { return false; }
+};
+
+// One aligned buffer, element (i, j) at i * stride + j. stride is cols rounded
+// up to a multiple of 8 doubles, so every row starts aligned.
 class Grid {
 private:
   std::size_t rows_;
   std::size_t cols_;
-  std::vector<double> data_;
+  std::size_t stride_;
+  std::vector<double, AlignedAllocator<double>> data_;
+
+  static std::size_t round_up(std::size_t n) {
+    return (n + DoublesPerCacheLine - 1) / DoublesPerCacheLine * DoublesPerCacheLine;
+  }
 
 public:
   Grid(std::size_t rows, std::size_t cols)
-      : rows_(rows), cols_(cols), data_(rows * cols, 0.0) {}
+      : rows_(rows), cols_(cols), stride_(round_up(cols)), data_(rows * stride_, 0.0) {}
 
-  double& operator()(std::size_t i, std::size_t j) { return data_[i * cols_ + j]; }
-  double  operator()(std::size_t i, std::size_t j) const { return data_[i * cols_ + j]; }
+  double& operator()(std::size_t i, std::size_t j) { return data_[i * stride_ + j]; }
+  double  operator()(std::size_t i, std::size_t j) const { return data_[i * stride_ + j]; }
 
   std::size_t rows() const { return rows_; }
   std::size_t cols() const { return cols_; }
+  std::size_t stride() const { return stride_; }
 };
 
 // Apply the five-point stencil over all interior points, copying the boundary
