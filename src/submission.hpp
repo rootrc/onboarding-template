@@ -15,6 +15,9 @@
 inline constexpr std::size_t CacheLineBytes = 64;
 inline constexpr std::size_t DoublesPerCacheLine = CacheLineBytes / sizeof(double);  // 8
 
+// Grids smaller than this many cells run the stencil on one thread.
+inline constexpr std::size_t ParallelMinCells = 1 << 16;
+
 // std::vector only guarantees alignof(double) == 8 bytes. 
 // This allocator makes sure that every row of the grid starts on a cache line boundary
 template <typename T>
@@ -103,8 +106,13 @@ inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
     new_grid(i, cols - 1) = old_grid(i, cols - 1);
   }
 
-  // Interior cells
-  for (std::size_t i = 1; i + 1 < rows; ++i) {
+  // Rows are independent, so threads can each take a block of rows.
+  // Small grids stay on one thread
+  const std::size_t last = rows - 1;
+  #ifdef _OPENMP
+    #pragma omp parallel for schedule(static) if (rows * cols >= ParallelMinCells)
+  #endif
+  for (std::size_t i = 1; i < last; ++i) {
     stencil_row(old_grid.row(i - 1), old_grid.row(i), old_grid.row(i + 1), new_grid.row(i), cols);
   }
 }
