@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <new>
 #include <vector>
@@ -67,6 +68,12 @@ public:
 inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
   const std::size_t rows = old_grid.rows();
   const std::size_t cols = old_grid.cols();
+
+  // Assertions to check that the grids are compatible
+  assert(new_grid.rows() == rows && new_grid.cols() == cols && "old and new grids must be the same size");
+  assert(new_grid.stride() == old_grid.stride() && "old and new grids must share a row layout");
+  assert(&old_grid != &new_grid && "old and new must be separate grids");
+
   if (rows == 0 || cols == 0) return;
 
   // Boundary ring is copied unchanged
