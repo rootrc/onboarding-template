@@ -71,7 +71,11 @@ public:
 // overlap up, mid or down, so it can vectorize without runtime overlap checks.
 inline void stencil_row(const double* __restrict up, const double* __restrict mid,
                         const double* __restrict down, double* __restrict out, std::size_t cols) {
-  for (std::size_t j = 1; j + 1 < cols; ++j) {
+  const std::size_t end = cols == 0 ? 0 : cols - 1;
+  #ifdef _OPENMP
+    #pragma omp simd
+  #endif
+  for (std::size_t j = 1; j < end; ++j) {
     out[j] = 0.5 * mid[j] + 0.125 * (up[j] + down[j] + mid[j - 1] + mid[j + 1]);
   }
 }
