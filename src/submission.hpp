@@ -2,21 +2,13 @@
 
 #include <cassert>
 #include <cstddef>
+#include <functional>
 #include <new>
 #include <vector>
-
-// Starter Grid for the 2D heat-diffusion problem.
-//
-// The evaluation harness uses operator() to set initial conditions and to read
-// results; it never touches your internal storage. Keep this interface,
-// everything else is yours.
 
 // Every row starts on a 64-byte boundary
 inline constexpr std::size_t CacheLineBytes = 64;
 inline constexpr std::size_t DoublesPerCacheLine = CacheLineBytes / sizeof(double);  // 8
-
-// Grids smaller than this many cells run the stencil on one thread.
-inline constexpr std::size_t ParallelMinCells = 1 << 16;
 
 // std::vector only guarantees alignof(double) == 8 bytes. 
 // This allocator makes sure that every row of the grid starts on a cache line boundary
@@ -41,12 +33,52 @@ struct AlignedAllocator {
   bool operator!=(const AlignedAllocator<U>&) const { return false; }
 };
 
+// Size of a grid. Rows and cols are always together.
+struct Dimensions {
+  std::size_t rows = 0;
+  std::size_t cols = 0;
+
+  friend bool operator==(Dimensions a, Dimensions b) { return a.rows == b.rows && a.cols == b.cols; }
+};
+
+// Read-only is a separate type so signatures show which grid can change.
+struct ConstGridView {
+  const double* data = nullptr;
+  Dimensions dims;
+  std::size_t stride = 0;
+
+  const double* row(std::size_t i) const { return data + i * stride; }
+  double operator()(std::size_t i, std::size_t j) const { return data[i * stride + j]; }
+};
+
+struct GridView {
+  double* data = nullptr;
+  Dimensions dims;
+  std::size_t stride = 0;
+
+  double* row(std::size_t i) const { return data + i * stride; }
+  double& operator()(std::size_t i, std::size_t j) const { return data[i * stride + j]; }
+
+  operator ConstGridView() const { return {data, dims, stride}; }
+};
+
+// The end of the view, one past the last element in the last row
+inline const double* view_end(ConstGridView v) {
+  if (v.dims.rows == 0 || v.dims.cols == 0) return v.data;
+  return v.data + (v.dims.rows - 1) * v.stride + v.dims.cols;
+}
+
+// Backs up the __restrict promise. std::less, since < on unrelated pointers is unspecified.
+inline bool overlaps(ConstGridView a, ConstGridView b) {
+  const std::less<const double*> before;
+  return before(a.data, view_end(b)) && before(b.data, view_end(a));
+}
+
 // One aligned buffer, element (i, j) at i * stride + j. stride is cols rounded
 // up to a multiple of 8 doubles, so every row starts aligned.
 class Grid {
 private:
-  std::size_t rows_;
-  std::size_t cols_;
+  Dimensions dims_;
   std::size_t stride_;
   std::vector<double, AlignedAllocator<double>> data_;
 
@@ -56,19 +88,19 @@ private:
 
 public:
   Grid(std::size_t rows, std::size_t cols)
-      : rows_(rows), cols_(cols), stride_(round_up(cols)), data_(rows * stride_, 0.0) {}
+      : dims_{rows, cols}, stride_(round_up(cols)), data_(rows * stride_, 0.0) {}
 
   double& operator()(std::size_t i, std::size_t j) { return data_[i * stride_ + j]; }
   double  operator()(std::size_t i, std::size_t j) const { return data_[i * stride_ + j]; }
 
-  std::size_t rows() const { return rows_; }
-  std::size_t cols() const { return cols_; }
-  std::size_t stride() const { return stride_; }
-
-  // Pointer to the start of row i
-  double*       row(std::size_t i)       { return data_.data() + i * stride_; }
-  const double* row(std::size_t i) const { return data_.data() + i * stride_; }
+  // The kernel only sees views, never ownership. A const Grid gives a read-only view.
+  GridView      view()       { return {data_.data(), dims_, stride_}; }
+  ConstGridView view() const { return {data_.data(), dims_, stride_}; }
 };
+
+// Below this, starting threads costs more than the work saves. A guess, not tuned:
+// our test laptop was too noisy to measure where the crossover really is.
+inline constexpr std::size_t ParallelMinCells = 1 << 16;
 
 // Computes one interior row. __restrict tells the compiler that out does not
 // overlap up, mid or down, so it can vectorize without runtime overlap checks.
@@ -83,17 +115,14 @@ inline void stencil_row(const double* __restrict up, const double* __restrict mi
   }
 }
 
-// Apply the five-point stencil over all interior points, copying the boundary
-// values unchanged from old_grid to new_grid. Implement your solution here.
-inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
-  const std::size_t rows = old_grid.rows();
-  const std::size_t cols = old_grid.cols();
+inline void stencil(ConstGridView old_grid, GridView new_grid) {
+  const std::size_t rows = old_grid.dims.rows;
+  const std::size_t cols = old_grid.dims.cols;
 
   // Assertions to check that the grids are compatible
-  assert(new_grid.rows() == rows && new_grid.cols() == cols && "old and new grids must be the same size");
-  assert(new_grid.stride() == old_grid.stride() && "old and new grids must share a row layout");
-  assert(&old_grid != &new_grid && "old and new must be separate grids");
-
+  assert(new_grid.dims == old_grid.dims && "old and new grids must be the same size");
+  assert(old_grid.stride >= cols && new_grid.stride >= cols && "a row can't be longer than its stride");
+  assert(!overlaps(old_grid, new_grid) && "old and new must not share memory");
   if (rows == 0 || cols == 0) return;
 
   // Boundary ring is copied unchanged
@@ -115,4 +144,10 @@ inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
   for (std::size_t i = 1; i < last; ++i) {
     stencil_row(old_grid.row(i - 1), old_grid.row(i), old_grid.row(i + 1), new_grid.row(i), cols);
   }
+}
+
+// Apply the five-point stencil over all interior points, copying the boundary
+// values unchanged from old_grid to new_grid.
+inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
+  stencil(old_grid.view(), new_grid.view());
 }
