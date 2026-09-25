@@ -90,8 +90,14 @@ public:
   Grid(std::size_t rows, std::size_t cols)
       : dims_{rows, cols}, stride_(round_up(cols)), data_(rows * stride_, 0.0) {}
 
-  double& operator()(std::size_t i, std::size_t j) { return data_[i * stride_ + j]; }
-  double  operator()(std::size_t i, std::size_t j) const { return data_[i * stride_ + j]; }
+  double& operator()(std::size_t i, std::size_t j) {
+    assert(i < dims_.rows && j < dims_.cols && "grid index out of range");
+    return data_[i * stride_ + j];
+  }
+  double operator()(std::size_t i, std::size_t j) const {
+    assert(i < dims_.rows && j < dims_.cols && "grid index out of range");
+    return data_[i * stride_ + j];
+  }
 
   // The kernel only sees views, never ownership. A const Grid gives a read-only view.
   GridView      view()       { return {data_.data(), dims_, stride_}; }
