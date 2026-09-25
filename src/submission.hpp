@@ -131,24 +131,23 @@ inline void stencil(ConstGridView old_grid, GridView new_grid) {
   assert(!overlaps(old_grid, new_grid) && "old and new must not share memory");
   if (rows == 0 || cols == 0) return;
 
-  // Boundary ring is copied unchanged
+  // Top and bottom boundary rows are copied unchanged
   for (std::size_t j = 0; j < cols; ++j) {
     new_grid(0, j) = old_grid(0, j);
     new_grid(rows - 1, j) = old_grid(rows - 1, j);
   }
-  for (std::size_t i = 0; i < rows; ++i) {
-    new_grid(i, 0) = old_grid(i, 0);
-    new_grid(i, cols - 1) = old_grid(i, cols - 1);
-  }
 
   // Rows are independent, so threads can each take a block of rows.
+  // Each thread also copies the left/right boundary cells of its own rows
   // Small grids stay on one thread
   const std::size_t last = rows - 1;
   #ifdef _OPENMP
     #pragma omp parallel for schedule(static) if (rows * cols >= ParallelMinCells)
   #endif
   for (std::size_t i = 1; i < last; ++i) {
+    new_grid(i, 0) = old_grid(i, 0);
     stencil_row(old_grid.row(i - 1), old_grid.row(i), old_grid.row(i + 1), new_grid.row(i), cols);
+    new_grid(i, cols - 1) = old_grid(i, cols - 1);
   }
 }
 
